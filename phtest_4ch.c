@@ -3,7 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#define DATA_INTERVAL_MS		(100)
+#define DATA_INTERVAL_MS		(10)
 #define PHIDGET_BRIDGE_GAIN		(BRIDGE_GAIN_128)
 #define PHIDGET_BRIDGE_NUM_CH	(4)
 #define NUM_INIT_CONV			(100)
