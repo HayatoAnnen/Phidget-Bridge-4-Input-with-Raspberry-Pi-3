@@ -2,117 +2,124 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <unistd.h>
 
-#define DATA_INTERVAL_MS		(10)
+#define DATA_INTERVAL_MS		(8)	// Should be a multiple of 8
 #define PHIDGET_BRIDGE_GAIN		(BRIDGE_GAIN_128)
 #define PHIDGET_BRIDGE_NUM_CH	(4)
-#define NUM_INIT_CONV			(100)
+#define NUM_OFFSET_CNT			(100)
 #define SCALE_VOLTAGERATIO		(1000)
 
 //Declare your Phidget channels and other variables
 static PhidgetVoltageRatioInputHandle voltageRatioInput[PHIDGET_BRIDGE_NUM_CH];
 
-static double g_voltageRatio[PHIDGET_BRIDGE_NUM_CH];
-static double zero_offset[PHIDGET_BRIDGE_NUM_CH];
+static double g_vr_res[PHIDGET_BRIDGE_NUM_CH]		= { 0 };
+static double g_vr_offset[PHIDGET_BRIDGE_NUM_CH]	= { 0 };
 
 static FILE *fcsv;
 
 //Declare any event handlers here. These will be called every time the associated event occurs.
 
-static void CCONV onVoltageRatioChange(PhidgetVoltageRatioInputHandle ch, void * ctx, double voltageRatio) {
-	int channel;
-	//static uint32_t conv_cnt	= 0;
-	static bool voltageRatioUpdate[PHIDGET_BRIDGE_NUM_CH]	= { 0 };
+static void CCONV onVoltageRatioChange(PhidgetVoltageRatioInputHandle ch, void * ctx, double voltageRatio)
+{
+	int channel, i;
+	static int res_cnt	= 0;
+	static bool vr_res_update[PHIDGET_BRIDGE_NUM_CH]	= { false };
 
 	//Getting the channel number to distinguish between Phidgets
 	Phidget_getChannel((PhidgetHandle)ch, &channel);
 	if (channel >= 0 && channel < PHIDGET_BRIDGE_NUM_CH) {
-		g_voltageRatio[channel]		= (voltageRatio - zero_offset[channel]) * SCALE_VOLTAGERATIO;
-		voltageRatioUpdate[channel]	= true;
+		g_vr_res[channel]		= voltageRatio * SCALE_VOLTAGERATIO - g_vr_offset[channel];
+		vr_res_update[channel]	= true;
 		
-		if (voltageRatioUpdate[0] & voltageRatioUpdate[1]
-			& voltageRatioUpdate[2] & voltageRatioUpdate[3]) {
-			
-			printf("\rv = [ %9.6lf %9.6lf %9.6lf %9.6lf ]",
-					g_voltageRatio[0], g_voltageRatio[1], g_voltageRatio[2], g_voltageRatio[3]);
-			voltageRatioUpdate[0]	= false;
-			voltageRatioUpdate[1]	= false;
-			voltageRatioUpdate[2]	= false;
-			voltageRatioUpdate[3]	= false;
-			
-			if (fcsv != NULL) {
-				fprintf(fcsv, "%9.6lf, %9.6lf, %9.6lf, %9.6lf\n",
-						g_voltageRatio[0], g_voltageRatio[1], g_voltageRatio[2], g_voltageRatio[3]);
+		for (i = 0; i < PHIDGET_BRIDGE_NUM_CH; i++) {
+			if (vr_res_update[i] == false) {
+				return;
 			}
-			/*
-			conv_cnt++;
-			if (conv_cnt >= 10 * 5) {
-				Phidget_close((PhidgetHandle)voltageRatioInput[0]);
-				Phidget_close((PhidgetHandle)voltageRatioInput[1]);
-				Phidget_close((PhidgetHandle)voltageRatioInput[2]);
-				Phidget_close((PhidgetHandle)voltageRatioInput[3]);
+		}
+		
+		res_cnt++;
+		printf("\r%9.6lf %9.6lf %9.6lf %9.6lf", g_vr_res[0], g_vr_res[1], g_vr_res[2], g_vr_res[3]);
+		if (fcsv != NULL) {
+			fprintf(fcsv, "%9.6lf,%9.6lf,%9.6lf,%9.6lf\n", g_vr_res[0], g_vr_res[1], g_vr_res[2], g_vr_res[3]);
+		}
+		for (i = 0; i < PHIDGET_BRIDGE_NUM_CH; i++) {
+			vr_res_update[i] = false;
+		}
+		if (res_cnt >= 1000) {
+			Phidget_close((PhidgetHandle)voltageRatioInput[0]);
+			Phidget_close((PhidgetHandle)voltageRatioInput[1]);
+			Phidget_close((PhidgetHandle)voltageRatioInput[2]);
+			Phidget_close((PhidgetHandle)voltageRatioInput[3]);
 
-				PhidgetVoltageRatioInput_delete(&voltageRatioInput[0]);
-				PhidgetVoltageRatioInput_delete(&voltageRatioInput[1]);
-				PhidgetVoltageRatioInput_delete(&voltageRatioInput[2]);
-				PhidgetVoltageRatioInput_delete(&voltageRatioInput[3]);
-			}
-			*/
+			PhidgetVoltageRatioInput_delete(&voltageRatioInput[0]);
+			PhidgetVoltageRatioInput_delete(&voltageRatioInput[1]);
+			PhidgetVoltageRatioInput_delete(&voltageRatioInput[2]);
+			PhidgetVoltageRatioInput_delete(&voltageRatioInput[3]);
 		}
 	}
 }
 
-static void CCONV onVoltageRatioChangeInit(PhidgetVoltageRatioInputHandle ch, void * ctx, double voltageRatio) {
-	int channel;
-	static int init_conv_cnt	= 0;
-	static bool voltageRatioUpdate[PHIDGET_BRIDGE_NUM_CH]	= { 0 };
-	static double sum_voltageRatio[PHIDGET_BRIDGE_NUM_CH]	= { 0 };
+static void CCONV onVoltageRatioGetOffset(PhidgetVoltageRatioInputHandle ch, void * ctx, double voltageRatio)
+{
+	int channel, i;
+	static int vr_res_cnt[PHIDGET_BRIDGE_NUM_CH]	= { 0 };
 
 	//Getting the channel number to distinguish between Phidgets
 	Phidget_getChannel((PhidgetHandle)ch, &channel);
-	if (channel >= 0 && channel < PHIDGET_BRIDGE_NUM_CH) {
-		sum_voltageRatio[channel]		+= voltageRatio;
-		voltageRatioUpdate[channel]	= true;
+	if (channel >= 0 && channel < PHIDGET_BRIDGE_NUM_CH && vr_res_cnt[channel] < NUM_OFFSET_CNT) {
+		g_vr_res[channel]		+= voltageRatio * SCALE_VOLTAGERATIO;
+		vr_res_cnt[channel]++;
 		
-		if (voltageRatioUpdate[0] & voltageRatioUpdate[1]
-			& voltageRatioUpdate[2] & voltageRatioUpdate[3]) {
-			init_conv_cnt++;
-			if (init_conv_cnt >= NUM_INIT_CONV) {
-				PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[0], onVoltageRatioChange, NULL);
-				PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[1], onVoltageRatioChange, NULL);
-				PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[2], onVoltageRatioChange, NULL);
-				PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[3], onVoltageRatioChange, NULL);
-				
-				zero_offset[0]		= sum_voltageRatio[0] / NUM_INIT_CONV;
-				zero_offset[1]		= sum_voltageRatio[1] / NUM_INIT_CONV;
-				zero_offset[2]		= sum_voltageRatio[2] / NUM_INIT_CONV;
-				zero_offset[3]		= sum_voltageRatio[3] / NUM_INIT_CONV;
-				
-				fcsv	= fopen("loadcell.csv", "w");
-				if (fcsv == NULL) {
-					printf("File open error! : loadcell.csv\n");
-				} else {
-					fprintf(fcsv, "CH 0, CH 1, CH 2, CH 3\n");
+		if (vr_res_cnt[channel] == NUM_OFFSET_CNT) {
+			g_vr_offset[channel]	= g_vr_res[channel] / vr_res_cnt[channel];
+			for (i = 0; i < PHIDGET_BRIDGE_NUM_CH; i++) {
+				if (g_vr_offset[i] == 0.0) {
+					return;
 				}
 			}
+			printf("%9.6lf %9.6lf %9.6lf %9.6lf\n", g_vr_offset[0], g_vr_offset[1], g_vr_offset[2], g_vr_offset[3]);
 			
-			voltageRatioUpdate[0]	= false;
-			voltageRatioUpdate[1]	= false;
-			voltageRatioUpdate[2]	= false;
-			voltageRatioUpdate[3]	= false;
-		}
+			if (fcsv != NULL) {
+				fprintf(fcsv, "CH 0 offset,CH 1 offset,CH 2 offset,CH 3 offset\n");
+				fprintf(fcsv, "%9.6lf,%9.6lf,%9.6lf,%9.6lf\n", g_vr_offset[0], g_vr_offset[1], g_vr_offset[2], g_vr_offset[3]);
+				fprintf(fcsv, "CH 0,CH 1,CH 2,CH 3\n");
+			} else {
+				printf("loadcell.csv open error!\n");
+			}
+			
+			PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[0], onVoltageRatioChange, NULL);
+			PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[1], onVoltageRatioChange, NULL);
+			PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[2], onVoltageRatioChange, NULL);
+			PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[3], onVoltageRatioChange, NULL);
+		}		
 	}
 }
 
-static void CCONV onAttach(PhidgetHandle ch, void * ctx) {
-	int channel;
+static void CCONV onAttach(PhidgetHandle ch, void * ctx)
+{
+	int channel, i;
+	static bool channel_init[PHIDGET_BRIDGE_NUM_CH]	= { 0 };
 
 	//Getting the channel number to distinguish between Phidgets
 	Phidget_getChannel(ch, &channel);
 	printf("Attach [%d]!\n", channel);
+	channel_init[channel]	= true;
+	
+	for (i = 0; i < PHIDGET_BRIDGE_NUM_CH; i++) {
+		if (channel_init[i] != true) {
+			return;
+		}
+	}
+	
+	PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[0], onVoltageRatioGetOffset, NULL);
+	PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[1], onVoltageRatioGetOffset, NULL);
+	PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[2], onVoltageRatioGetOffset, NULL);
+	PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[3], onVoltageRatioGetOffset, NULL);
 }
 
-static void CCONV onDetach(PhidgetHandle ch, void * ctx) {
+static void CCONV onDetach(PhidgetHandle ch, void * ctx)
+{
 	int channel;
 
 	//Getting the channel number to distinguish between Phidgets
@@ -121,7 +128,9 @@ static void CCONV onDetach(PhidgetHandle ch, void * ctx) {
 }
 
 int main(int argc, char *argv[])
-{
+{	
+	fcsv	= fopen("loadcell.csv", "w");
+
 	//Create your Phidget channels
 	PhidgetVoltageRatioInput_create(&voltageRatioInput[0]);
 	PhidgetVoltageRatioInput_create(&voltageRatioInput[1]);
@@ -135,16 +144,12 @@ int main(int argc, char *argv[])
 	Phidget_setChannel((PhidgetHandle)voltageRatioInput[3], 3);
 
 	//Assign any event handlers you need before calling open so that no events are missed.
-	PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[0], onVoltageRatioChangeInit, NULL);
 	Phidget_setOnAttachHandler((PhidgetHandle)voltageRatioInput[0], onAttach, NULL);
 	Phidget_setOnDetachHandler((PhidgetHandle)voltageRatioInput[0], onDetach, NULL);
-	PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[1], onVoltageRatioChangeInit, NULL);
 	Phidget_setOnAttachHandler((PhidgetHandle)voltageRatioInput[1], onAttach, NULL);
 	Phidget_setOnDetachHandler((PhidgetHandle)voltageRatioInput[1], onDetach, NULL);
-	PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[2], onVoltageRatioChangeInit, NULL);
 	Phidget_setOnAttachHandler((PhidgetHandle)voltageRatioInput[2], onAttach, NULL);
 	Phidget_setOnDetachHandler((PhidgetHandle)voltageRatioInput[2], onDetach, NULL);
-	PhidgetVoltageRatioInput_setOnVoltageRatioChangeHandler(voltageRatioInput[3], onVoltageRatioChangeInit, NULL);
 	Phidget_setOnAttachHandler((PhidgetHandle)voltageRatioInput[3], onAttach, NULL);
 	Phidget_setOnDetachHandler((PhidgetHandle)voltageRatioInput[3], onDetach, NULL);
 
@@ -167,12 +172,9 @@ int main(int argc, char *argv[])
 
 	//Wait until Enter has been pressed before exiting
 	getchar();
-	printf("\n\n");
-	if (fcsv != NULL) {
-		fclose(fcsv);
-	}
 
 	//Close your Phidgets once the program is done.
+/*
 	Phidget_close((PhidgetHandle)voltageRatioInput[0]);
 	Phidget_close((PhidgetHandle)voltageRatioInput[1]);
 	Phidget_close((PhidgetHandle)voltageRatioInput[2]);
@@ -182,6 +184,11 @@ int main(int argc, char *argv[])
 	PhidgetVoltageRatioInput_delete(&voltageRatioInput[1]);
 	PhidgetVoltageRatioInput_delete(&voltageRatioInput[2]);
 	PhidgetVoltageRatioInput_delete(&voltageRatioInput[3]);
+*/
+	printf("\n");
+	if (fcsv != NULL) {
+		fclose(fcsv);
+	}
 	
 	return 0;
 }
